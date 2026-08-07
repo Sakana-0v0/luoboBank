@@ -1,0 +1,87 @@
+server:
+  port: 8080
+
+spring:
+  jackson:
+    default-property-inclusion: non_null
+  profiles:
+    active: dev
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/luobobank?serverTimezone=Asia/Shanghai&characterEncoding=UTF-8
+    username: root
+    password: sakana013
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      initial-size: 5
+      min-idle: 5
+      max-active: 20
+      max-wait: 60000
+      validation-query: SELECT 1
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      stat-view-servlet:
+        enabled: true
+        url-pattern: /druid/*
+        login-username: admin
+        login-password: admin
+      web-stat-filter:
+        enabled: true
+      filter:
+        stat:
+          enabled: true
+          log-slow-sql: true
+          slow-sql-millis: 1000
+  # 邮件配置（请根据实际情况修改）
+  mail:
+    host: smtp.example.com          # SMTP 服务器地址
+    username: your-email@example.com
+    password: your-email-password
+    from: your-email@example.com    # 发件人地址
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+  # 定时任务
+  task:
+    scheduling:
+      pool:
+        size: 2
+
+# 应用配置
+app:
+  scheduler:
+    # 每日汇总邮件发送时间（默认每天凌晨0点）
+    daily-summary-cron: "0 0 0 * * ?"
+    # 汇总邮件接收地址
+    summary-report-email: "1069595532@qq.com"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: test
+server:
+  port: 8081
+
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+server:
+  port: 8082
+
+---
+spring:
+  config:
+    activate:
+      on-profile: dev
+server:
+  port: 8083
