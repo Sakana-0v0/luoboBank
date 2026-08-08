@@ -1,5 +1,6 @@
 package com.sakana.service;
 
+import com.sakana.annotation.DeadbeatCheck;
 import com.sakana.bean.Account;
 import com.sakana.bean.OpRecord;
 import com.sakana.bean.OpType;
@@ -11,7 +12,6 @@ import com.sakana.utils.PasswordStrengthValidator;
 import com.sakana.web.vo.ResultCode;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,8 +26,6 @@ public class BankServiceImpl implements BankService {
     private AccountDao accountdao;
     @Autowired
     private OpRecordDao opRecordDao;
-    @Autowired
-    private ApplicationContext applicationContext;
     @Autowired
     private PasswordEncoder passwordEncoder;
     @Autowired
@@ -66,6 +64,7 @@ public class BankServiceImpl implements BankService {
         return a;
     }
 
+    @DeadbeatCheck
     @Override
     public Account deposite(int accountid, double money, Integer otherAccountId, String remark) {
         Account a = null;
@@ -97,6 +96,7 @@ public class BankServiceImpl implements BankService {
 
     //以下的问题: 先查accountid ->account  -> 判断余额
     //
+    @DeadbeatCheck
     @Override
     public Account withdraw(int accountid, double money, Integer otherAccountId, String remark) {
         Account a = null;
@@ -106,7 +106,10 @@ public class BankServiceImpl implements BankService {
             log.error("查无此账户:" + accountid);
             throw new RuntimeException("查无此账户:" + accountid);
         }
-        if (a.getBalance() < money) {
+        // 使用 BigDecimal 进行精确比较，避免浮点数精度问题
+        java.math.BigDecimal balance = java.math.BigDecimal.valueOf(a.getBalance());
+        java.math.BigDecimal withdrawAmount = java.math.BigDecimal.valueOf(money);
+        if (balance.compareTo(withdrawAmount) < 0) {
             throw new BalanceNotSufficientException(ResultCode.PARAM_ERROR);
         }
         a.setBalance(a.getBalance() - money);
@@ -127,23 +130,103 @@ public class BankServiceImpl implements BankService {
         return a;
     }
 
+    @DeadbeatCheck
     @Override
     public Account transfer(int accountId, double money, int toAccountId, String remark) {
-        // 通过代理对象调用，确保事务生效
-        BankService bankService = applicationContext.getBean(BankService.class);
+        log.info("转账请求 - fromAccountId: {}, toAccountId: {}, money: {}", accountId, toAccountId, money);
 
         // 获取转出账户信息（用于发送转账通知）
         Account fromAccount = this.findAccount(accountId);
+        if (fromAccount == null) {
+            throw new IllegalArgumentException("转出账户不存在");
+        }
+        Account toAccount = this.findAccount(toAccountId);
+        if (toAccount == null) {
+            throw new IllegalArgumentException("转入账户不存在");
+        }
+        if (accountId == toAccountId) {
+            throw new IllegalArgumentException("不能给自己转账");
+        }
+        if (money <= 0) {
+            throw new IllegalArgumentException("转账金额必须大于0");
+        }
 
-        // 执行转入
-        bankService.deposite(toAccountId, money, accountId, remark);
-        // 执行转出
-        Account result = bankService.withdraw(accountId, money, toAccountId, remark);
+        log.info("转账前 - fromBalance: {}, toBalance: {}", fromAccount.getBalance(), toAccount.getBalance());
+
+        // 使用 String 方式创建 BigDecimal，避免 double 精度问题
+        java.math.BigDecimal balance = new java.math.BigDecimal(String.valueOf(fromAccount.getBalance()));
+        java.math.BigDecimal transferAmount = new java.math.BigDecimal(String.valueOf(money));
+        log.info("BigDecimal - balance: {}, transferAmount: {}", balance, transferAmount);
+
+        if (balance.compareTo(transferAmount) < 0) {
+            throw new BalanceNotSufficientException(ResultCode.PARAM_ERROR);
+        }
+
+        // 使用 BigDecimal 进行精确计算并保留2位小数
+        java.math.BigDecimal fromBalanceBd = new java.math.BigDecimal(String.valueOf(fromAccount.getBalance()));
+        java.math.BigDecimal toBalanceBd = new java.math.BigDecimal(String.valueOf(toAccount.getBalance()));
+        java.math.BigDecimal moneyBd = new java.math.BigDecimal(String.valueOf(money));
+
+        // 计算转账后余额，确保不会因浮点数精度变成负数
+        java.math.BigDecimal fromNewBalanceBd = fromBalanceBd.subtract(moneyBd);
+        log.info("计算后 - fromNewBalanceBd(before check): {}", fromNewBalanceBd);
+
+        // 如果结果为负数或极小值，设为0（防止精度问题）
+        if (fromNewBalanceBd.compareTo(java.math.BigDecimal.ZERO) < 0) {
+            log.warn("转账后余额为负数，强制设为0");
+            fromNewBalanceBd = java.math.BigDecimal.ZERO;
+        }
+        double fromNewBalance = fromNewBalanceBd.setScale(2, java.math.RoundingMode.DOWN).doubleValue();
+        log.info("转换后 - fromNewBalance: {}", fromNewBalance);
+
+        java.math.BigDecimal toNewBalanceBd = toBalanceBd.add(moneyBd);
+        double toNewBalance = toNewBalanceBd.setScale(2, java.math.RoundingMode.HALF_UP).doubleValue();
+
+        // 更新转出账户余额
+        log.info("更新转出账户余额 - accountId: {}, newBalance: {}", accountId, fromNewBalance);
+
+        // 更新前再次确认余额足够（防止并发问题）
+        Account beforeUpdate = this.findAccount(accountId);
+        log.info("更新前余额确认 - accountId: {}, currentBalance: {}", accountId, beforeUpdate.getBalance());
+        if (beforeUpdate.getBalance() < money) {
+            throw new BalanceNotSufficientException(ResultCode.PARAM_ERROR);
+        }
+
+        this.accountdao.update(accountId, fromNewBalance);
+
+        // 记录转出流水 - 使用 TRANSFER 类型
+        OpRecord withdrawRecord = new OpRecord();
+        withdrawRecord.setAccountId(accountId);
+        withdrawRecord.setOpMoney(-money);
+        withdrawRecord.setOpType(OpType.TRANSFER);
+        withdrawRecord.setTransferId(toAccountId);
+        withdrawRecord.setRemark(remark);
+        this.opRecordDao.insertOpRecord(withdrawRecord);
+
+        // 更新转入账户余额
+        this.accountdao.update(toAccountId, toNewBalance);
+
+        // 记录转入流水 - 使用 TRANSFER 类型
+        OpRecord depositRecord = new OpRecord();
+        depositRecord.setAccountId(toAccountId);
+        depositRecord.setOpMoney(money);
+        depositRecord.setOpType(OpType.TRANSFER);
+        depositRecord.setTransferId(accountId);
+        depositRecord.setRemark(remark);
+        this.opRecordDao.insertOpRecord(depositRecord);
+
+        // 重新查询转出账户，确认余额更新成功
+        Account verifiedFromAccount = this.findAccount(accountId);
+        java.math.BigDecimal verifiedBalance = new java.math.BigDecimal(String.valueOf(verifiedFromAccount.getBalance()));
+        java.math.BigDecimal expectedBalance = new java.math.BigDecimal(String.valueOf(fromNewBalance));
+        if (verifiedFromAccount == null || verifiedBalance.compareTo(expectedBalance) != 0) {
+            throw new RuntimeException("转账失败：余额更新异常");
+        }
 
         // 发送转账通知邮件（给转出账户）
-        sendNotificationEmail(fromAccount, "转账", money, toAccountId);
+        sendNotificationEmail(verifiedFromAccount, "转账", money, toAccountId);
 
-        return result;
+        return verifiedFromAccount;
     }
 
     @Transactional(readOnly = true)    //这是个只读事务.

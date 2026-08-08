@@ -85,6 +85,9 @@ public class AccountDaoImpl implements AccountDao {
                     Account account = new Account();
                     account.setAccountId(resultSet.getInt("accountid"));
                     account.setBalance(resultSet.getDouble("balance"));
+                    account.setPasswordHash(resultSet.getString("password_hash"));
+                    account.setEmail(resultSet.getString("email"));
+                    account.setStatus(resultSet.getObject("status") != null ? resultSet.getInt("status") : 0);
                     return account;
                 });
         return list;
@@ -98,6 +101,8 @@ public class AccountDaoImpl implements AccountDao {
                     account.setAccountId(resultSet.getInt("accountid"));
                     account.setBalance(resultSet.getDouble("balance"));
                     account.setPasswordHash(resultSet.getString("password_hash"));
+                    account.setEmail(resultSet.getString("email"));
+                    account.setStatus(resultSet.getObject("status") != null ? resultSet.getInt("status") : 0);
                     return account;
                 }, accountId);
 
